@@ -2,8 +2,11 @@ import cv2
 import numpy as np
 
 
+A1_CORNER = "bottom-right"
+
+
 LAYOUTS = {
-    "a8": [
+    "top-left": [
         ["a1", "b1", "c1", "d1", "e1", "f1", "g1", "h1"],
         ["a2", "b2", "c2", "d2", "e2", "f2", "g2", "h2"],
         ["a3", "b3", "c3", "d3", "e3", "f3", "g3", "h3"],
@@ -14,7 +17,7 @@ LAYOUTS = {
         ["a8", "b8", "c8", "d8", "e8", "f8", "g8", "h8"],
     ],
 
-    "h8": [
+    "top-right": [
         ["a8", "a7", "a6", "a5", "a4", "a3", "a2", "a1"],
         ["b8", "b7", "b6", "b5", "b4", "b3", "b2", "b1"],
         ["c8", "c7", "c6", "c5", "c4", "c3", "c2", "c1"],
@@ -25,7 +28,7 @@ LAYOUTS = {
         ["h8", "h7", "h6", "h5", "h4", "h3", "h2", "h1"],
     ],
 
-    "a1": [
+    "bottom-left": [
         ["h1", "h2", "h3", "h4", "h5", "h6", "h7", "h8"],
         ["g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8"],
         ["f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8"],
@@ -36,7 +39,7 @@ LAYOUTS = {
         ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"],
     ],
 
-    "h1": [
+    "bottom-right": [
         ["h8", "g8", "f8", "e8", "d8", "c8", "b8", "a8"],
         ["h7", "g7", "f7", "e7", "d7", "c7", "b7", "a7"],
         ["h6", "g6", "f6", "e6", "d6", "c6", "b6", "a6"],
@@ -50,10 +53,8 @@ LAYOUTS = {
 
 
 def line_intersection(line1, line2):
-
     x1, y1 = line1[0]
     x2, y2 = line1[1]
-
     x3, y3 = line2[0]
     x4, y4 = line2[1]
 
@@ -78,26 +79,32 @@ def line_intersection(line1, line2):
     return np.array([px, py], dtype=np.float32)
 
 
-def square_name(row, col, square):
-    return LAYOUTS[square][row][col]
+def get_intersections(horizontal, vertical):
+    intersections = []
+
+    for row in range(9):
+        current_row = []
+
+        for col in range(9):
+            point = line_intersection(
+                horizontal[row],
+                vertical[col]
+            )
+            current_row.append(point)
+
+        intersections.append(current_row)
+
+    return np.array(intersections, dtype=np.float32)
 
 
-def annotate_grid(
-    image,
-    horizontal_lines,
-    vertical_lines,
-    square
-):
+def square_name(row, col):
+    return LAYOUTS[A1_CORNER][row][col]
 
-    if square not in LAYOUTS:
-        raise ValueError(
-            "Invalid square. Use a8, h8, a1, or h1."
-        )
 
+def annotate_grid(image, horizontal_lines, vertical_lines):
     output = image.copy()
 
     for row in range(8):
-
         for col in range(8):
 
             top_left = line_intersection(
@@ -114,20 +121,16 @@ def annotate_grid(
                 (top_left + bottom_right) / 2
             ).astype(int)
 
-            name = square_name(
-                row,
-                col,
-                square
-            )
+            name = square_name(row, col)
 
             cv2.putText(
                 output,
                 name,
                 tuple(center),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
+                0.5,
                 (0, 0, 255),
-                2,
+                1,
                 cv2.LINE_AA
             )
 

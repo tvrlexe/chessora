@@ -4,7 +4,7 @@ from itertools import combinations
 from chessboard_segmentation import get_board_points
 
 
-IMAGE = "photos/sg-11134201-8260e-mmfo8iv8nwg50e_tn.jpeg"
+IMAGE = "photos/photo.jpg"
 OUTPUT = "photos/new_angle.jpg"
 SIZE = 800
 
