@@ -3,34 +3,45 @@ import threading
 
 import cv2
 import numpy as np
-from flask import Flask, Response
+from flask import Flask, Response, request
 
 from board_detection import get_board_points
 from perspective import get_perspective_matrix, warp_board
 from grid_reconstruction import get_grid
-from square_extraction import LAYOUTS
+from square_extraction import annotate_grid
 
 
 app = Flask(__name__)
+
 
 WIDTH = 960
 HEIGHT = 720
 FPS = 30
 SIZE = 800
 
+
+camera_process = None
 frame = None
-mode = "camera"
+frame_lock = threading.Lock()
 
-matrix = None
-horizontal = None
-vertical = None
-square = None
+confirmed_frame = None
+warped_board = None
 
-lock = threading.Lock()
+horizontal_lines = None
+vertical_lines = None
+perspective_matrix = None
+
+processing = False
+board_ready = False
+orientation_ready = False
+orientation_square = None
 
 
 def start_camera():
-    return subprocess.Popen(
+
+    global camera_process
+
+    camera_process = subprocess.Popen(
         [
             "rpicam-vid",
             "--width", str(WIDTH),
@@ -44,270 +55,749 @@ def start_camera():
             "--brightness", "0.0",
             "--saturation", "1.0",
             "--vflip",
-            "--roi", "0.28,0.26,0.44,0.48",
             "-o", "-"
         ],
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
+        bufsize=0
     )
 
 
-def camera_loop(camera):
+def read_camera():
+
     global frame
 
     buffer = b""
 
     while True:
-        buffer += camera.stdout.read(4096)
 
-        start = buffer.find(b"\xff\xd8")
-        end = buffer.find(b"\xff\xd9", start + 2)
+        chunk = camera_process.stdout.read(4096)
 
-        if start == -1 or end == -1:
-            continue
+        if not chunk:
+            break
 
-        jpg = buffer[start:end + 2]
-        buffer = buffer[end + 2:]
+        buffer += chunk
 
-        image = cv2.imdecode(
-            np.frombuffer(jpg, np.uint8),
-            cv2.IMREAD_COLOR
-        )
+        while True:
 
-        if image is not None:
-            with lock:
-                frame = image
+            start = buffer.find(b"\xff\xd8")
+
+            if start == -1:
+                break
+
+            end = buffer.find(
+                b"\xff\xd9",
+                start + 2
+            )
+
+            if end == -1:
+                break
+
+            jpg = buffer[start:end + 2]
+            buffer = buffer[end + 2:]
+
+            image = cv2.imdecode(
+                np.frombuffer(
+                    jpg,
+                    dtype=np.uint8
+                ),
+                cv2.IMREAD_COLOR
+            )
+
+            if image is not None:
+
+                with frame_lock:
+                    frame = image
 
 
-def annotate_board(board):
-    result = board.copy()
-    layout = LAYOUTS[square]
+def draw_grid(
+    image,
+    horizontal,
+    vertical
+):
+
+    output = image.copy()
 
     for y in horizontal:
+
         cv2.line(
-            result,
+            output,
             (0, int(y)),
-            (SIZE, int(y)),
+            (SIZE - 1, int(y)),
             (0, 255, 0),
             2
         )
 
     for x in vertical:
+
         cv2.line(
-            result,
+            output,
             (int(x), 0),
-            (int(x), SIZE),
-            (0, 255, 0),
+            (int(x), SIZE - 1),
+            (255, 0, 0),
             2
         )
 
-    for row in range(8):
-        for col in range(8):
+    return output
 
-            x = int(
-                (vertical[col] + vertical[col + 1]) / 2
+
+def grid_to_wide(
+    matrix,
+    horizontal,
+    vertical
+):
+
+    inverse_matrix = np.linalg.inv(matrix)
+
+    wide_horizontal = []
+    wide_vertical = []
+
+    for y in horizontal:
+
+        points = np.array(
+            [
+                [0, y],
+                [SIZE - 1, y]
+            ],
+            dtype=np.float32
+        ).reshape(-1, 1, 2)
+
+        transformed = cv2.perspectiveTransform(
+            points,
+            inverse_matrix
+        ).reshape(-1, 2)
+
+        wide_horizontal.append(
+            (
+                transformed[0],
+                transformed[1]
             )
-
-            y = int(
-                (horizontal[row] + horizontal[row + 1]) / 2
-            )
-
-            cv2.putText(
-                result,
-                layout[row][col],
-                (x, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 255),
-                1,
-                cv2.LINE_AA
-            )
-
-    return result
-
-
-def process_frame(image):
-
-    if mode == "camera":
-        return image
-
-    board = warp_board(
-        image,
-        matrix,
-        SIZE
-    )
-
-    if mode == "warped":
-        return board
-
-    if mode == "annotated":
-        return annotate_board(board)
-
-    return image
-
-
-def generate_frames():
-
-    while True:
-
-        with lock:
-            if frame is None:
-                continue
-
-            image = frame.copy()
-
-        result = process_frame(image)
-
-        ok, encoded = cv2.imencode(
-            ".jpg",
-            result
         )
 
-        if not ok:
-            continue
+    for x in vertical:
 
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n"
-            + encoded.tobytes()
-            + b"\r\n"
+        points = np.array(
+            [
+                [x, 0],
+                [x, SIZE - 1]
+            ],
+            dtype=np.float32
+        ).reshape(-1, 1, 2)
+
+        transformed = cv2.perspectiveTransform(
+            points,
+            inverse_matrix
+        ).reshape(-1, 2)
+
+        wide_vertical.append(
+            (
+                transformed[0],
+                transformed[1]
+            )
         )
 
-
-@app.route("/")
-def index():
-    return """
-    <html>
-    <body style="
-        margin:0;
-        background:#111;
-        display:flex;
-        justify-content:center;
-        align-items:center;
-        height:100vh;
-    ">
-        <img src="/video" style="
-            max-width:100%;
-            max-height:100vh;
-        ">
-    </body>
-    </html>
-    """
+    return wide_horizontal, wide_vertical
 
 
-@app.route("/video")
-def video():
-    return Response(
-        generate_frames(),
-        mimetype="multipart/x-mixed-replace; boundary=frame"
+def get_wide_grid():
+
+    if perspective_matrix is None:
+        return None, None
+
+    if horizontal_lines is None:
+        return None, None
+
+    if vertical_lines is None:
+        return None, None
+
+    return grid_to_wide(
+        perspective_matrix,
+        horizontal_lines,
+        vertical_lines
     )
 
 
-if __name__ == "__main__":
+def process_board():
 
-    camera = start_camera()
+    global confirmed_frame
+    global warped_board
+    global horizontal_lines
+    global vertical_lines
+    global perspective_matrix
+    global processing
+    global board_ready
+    global orientation_ready
+    global orientation_square
 
-    threading.Thread(
-        target=camera_loop,
-        args=(camera,),
-        daemon=True
-    ).start()
-
-    threading.Thread(
-        target=lambda: app.run(
-            host="0.0.0.0",
-            port=5000,
-            threaded=True,
-            use_reloader=False
-        ),
-        daemon=True
-    ).start()
+    processing = True
 
     try:
 
-        print()
-        print("Chessora")
-        print()
-        print("Open: http://10.37.33.89:5000/")
-        print()
+        with frame_lock:
 
-        print("Is the board positioned correctly? (y/n):")
+            if frame is None:
+                print("No camera frame available.")
+                return
 
-        while True:
+            confirmed_frame = frame.copy()
 
-            answer = input().strip().lower()
-
-            if answer == "y":
-                break
-
-            if answer == "n":
-                print("Adjust the board.")
-                print("Is the board positioned correctly? (y/n):")
-                continue
-
-            print("Please enter y or n.")
-
-        with lock:
-            confirmed = frame.copy()
-
-        print()
         print("Detecting board...")
 
-        points = get_board_points(confirmed)
+        points = get_board_points(
+            confirmed_frame
+        )
 
-        print("Board points:")
-        print(points.astype(int))
+        print("Board detected.")
 
-        matrix = get_perspective_matrix(
+        perspective_matrix = get_perspective_matrix(
             points,
             SIZE
         )
 
-        with lock:
-            mode = "warped"
+        print("Cropping board zone...")
 
-        print()
-        print("Reconstructing grid...")
-
-        horizontal, vertical = get_grid(
-            warp_board(
-                confirmed,
-                matrix,
-                SIZE
-            )
+        warped = warp_board(
+            confirmed_frame,
+            perspective_matrix,
+            SIZE
         )
 
-        print("Horizontal:", np.round(horizontal, 1))
-        print("Vertical:", np.round(vertical, 1))
+        print("Reconstructing grid...")
 
-        print()
-        print("What square is at the bottom-left corner?")
-        print("(a1/a8/h1/h8):")
+        horizontal_lines, vertical_lines = get_grid(
+            warped
+        )
 
-        while True:
+        print("Grid reconstructed.")
 
-            answer = input().strip().lower()
+        warped_board = draw_grid(
+            warped,
+            horizontal_lines,
+            vertical_lines
+        )
 
-            if answer in LAYOUTS:
-                square = answer
-                break
+        board_ready = True
+        orientation_ready = False
+        orientation_square = None
 
-            print("Please enter a1, a8, h1, or h8.")
+    except Exception as error:
 
-        with lock:
-            mode = "annotated"
+        print(
+            f"Board processing failed: {error}"
+        )
 
-        print()
-        print("Chessora is ready.")
-
-        while True:
-            threading.Event().wait(1)
-
-    except KeyboardInterrupt:
-
-        print("\nStopping Chessora...")
+        board_ready = False
 
     finally:
 
-        camera.terminate()
-        camera.wait()
+        processing = False
+
+
+def get_live_annotated_frame():
+
+    if not orientation_ready:
+        return None
+
+    if orientation_square is None:
+        return None
+
+    with frame_lock:
+
+        if frame is None:
+            return None
+
+        current_frame = frame.copy()
+
+    wide_horizontal, wide_vertical = get_wide_grid()
+
+    if wide_horizontal is None:
+        return None
+
+    return annotate_grid(
+        current_frame,
+        wide_horizontal,
+        wide_vertical,
+        orientation_square
+    )
+
+
+@app.route("/")
+def index():
+
+    return """
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<title>Chessora</title>
+
+<style>
+
+body {
+    font-family: Arial, sans-serif;
+    text-align: center;
+    margin: 20px;
+}
+
+img {
+    max-width: 960px;
+    width: 100%;
+    height: auto;
+}
+
+button {
+    font-size: 22px;
+    padding: 14px 25px;
+    margin: 8px;
+    cursor: pointer;
+}
+
+#cornerButtons {
+    display: none;
+}
+
+#repositionButton {
+    display: none;
+}
+
+#message {
+    font-size: 26px;
+    margin: 20px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<h1>Chessora</h1>
+
+<div id="message">
+    Position the board
+</div>
+
+<div id="view">
+    <img id="camera" src="/video">
+</div>
+
+<br>
+
+<button
+    id="yesButton"
+    onclick="confirmBoard()"
+>
+    YES
+</button>
+
+<div id="cornerButtons">
+
+    <div>
+
+        <button onclick="selectCorner('top-left')">
+            TOP LEFT
+        </button>
+
+        <button onclick="selectCorner('top-right')">
+            TOP RIGHT
+        </button>
+
+    </div>
+
+    <div>
+
+        <button onclick="selectCorner('bottom-left')">
+            BOTTOM LEFT
+        </button>
+
+        <button onclick="selectCorner('bottom-right')">
+            BOTTOM RIGHT
+        </button>
+
+    </div>
+
+</div>
+
+<button
+    id="repositionButton"
+    onclick="repositionBoard()"
+>
+    REPOSITION BOARD
+</button>
+
+
+<script>
+
+function confirmBoard() {
+
+    const button =
+        document.getElementById("yesButton");
+
+    button.disabled = true;
+    button.innerText = "PROCESSING...";
+
+    document.getElementById("message").innerText =
+        "Detecting board and reconstructing grid...";
+
+    fetch("/confirm", {
+        method: "POST"
+    });
+
+    checkStatus();
+}
+
+
+function checkStatus() {
+
+    fetch("/status")
+        .then(response => response.json())
+        .then(data => {
+
+            if (data.orientation) {
+
+                document.getElementById("view").innerHTML =
+                    '<img src="/board?t=' + Date.now() + '">';
+
+                document.getElementById("message").innerText =
+                    "Which corner is a1?";
+
+                document.getElementById("yesButton")
+                    .style.display = "none";
+
+                document.getElementById("cornerButtons")
+                    .style.display = "block";
+
+                document.getElementById("repositionButton")
+                    .style.display = "inline-block";
+
+                return;
+            }
+
+            if (data.processing) {
+
+                setTimeout(checkStatus, 300);
+
+                return;
+            }
+
+            if (!data.ready) {
+
+                document.getElementById("yesButton")
+                    .disabled = false;
+
+                document.getElementById("yesButton")
+                    .innerText = "YES";
+
+                return;
+            }
+
+            setTimeout(checkStatus, 300);
+        });
+}
+
+
+function selectCorner(corner) {
+
+    document.getElementById("message").innerText =
+        "Annotating board...";
+
+    document.getElementById("cornerButtons")
+        .style.display = "none";
+
+    fetch("/orientation", {
+
+        method: "POST",
+
+        headers: {
+            "Content-Type": "application/json"
+        },
+
+        body: JSON.stringify({
+            corner: corner
+        })
+
+    })
+    .then(response => response.json())
+    .then(data => {
+
+        if (data.status !== "annotated") {
+
+            document.getElementById("message").innerText =
+                "Orientation failed";
+
+            return;
+        }
+
+        document.getElementById("view").innerHTML =
+            '<img src="/annotated?t=' + Date.now() + '">';
+
+        document.getElementById("message").innerText =
+            "Board annotated";
+
+    });
+}
+
+
+function repositionBoard() {
+
+    fetch("/reposition", {
+        method: "POST"
+    })
+    .then(() => {
+
+        document.getElementById("view").innerHTML =
+            '<img id="camera" src="/video?t=' +
+            Date.now() +
+            '">';
+
+        document.getElementById("message").innerText =
+            "Position the board";
+
+        document.getElementById("yesButton")
+            .style.display = "inline-block";
+
+        document.getElementById("yesButton")
+            .disabled = false;
+
+        document.getElementById("yesButton")
+            .innerText = "YES";
+
+        document.getElementById("cornerButtons")
+            .style.display = "none";
+
+        document.getElementById("repositionButton")
+            .style.display = "none";
+
+    });
+}
+
+</script>
+
+</body>
+
+</html>
+"""
+
+
+@app.route("/video")
+def video():
+
+    def generate():
+
+        while not board_ready:
+
+            with frame_lock:
+
+                if frame is None:
+                    continue
+
+                output = frame.copy()
+
+            success, encoded = cv2.imencode(
+                ".jpg",
+                output
+            )
+
+            if success:
+
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + encoded.tobytes()
+                    + b"\r\n"
+                )
+
+    return Response(
+        generate(),
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+@app.route("/board")
+def board():
+
+    def generate():
+
+        while board_ready and not orientation_ready:
+
+            with frame_lock:
+
+                if frame is None:
+                    continue
+
+                current_frame = frame.copy()
+
+            warped = warp_board(
+                current_frame,
+                perspective_matrix,
+                SIZE
+            )
+
+            output = draw_grid(
+                warped,
+                horizontal_lines,
+                vertical_lines
+            )
+
+            success, encoded = cv2.imencode(
+                ".jpg",
+                output
+            )
+
+            if success:
+
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + encoded.tobytes()
+                    + b"\r\n"
+                )
+
+    return Response(
+        generate(),
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+@app.route("/annotated")
+def annotated():
+
+    def generate():
+
+        while orientation_ready:
+
+            output = get_live_annotated_frame()
+
+            if output is None:
+                continue
+
+            success, encoded = cv2.imencode(
+                ".jpg",
+                output
+            )
+
+            if success:
+
+                yield (
+                    b"--frame\r\n"
+                    b"Content-Type: image/jpeg\r\n\r\n"
+                    + encoded.tobytes()
+                    + b"\r\n"
+                )
+
+    return Response(
+        generate(),
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+@app.route("/confirm", methods=["POST"])
+def confirm():
+
+    if not processing and not board_ready:
+
+        threading.Thread(
+            target=process_board,
+            daemon=True
+        ).start()
+
+    return {
+        "status": "processing"
+    }
+
+
+@app.route("/orientation", methods=["POST"])
+def orientation():
+
+    global orientation_square
+    global orientation_ready
+
+    data = request.get_json()
+
+    corner = data["corner"]
+
+    layouts = {
+        "top-left": "a8",
+        "top-right": "h8",
+        "bottom-left": "a1",
+        "bottom-right": "h1",
+    }
+
+    square = layouts.get(corner)
+
+    if square is None:
+
+        return {
+            "status": "error",
+            "error": "Invalid corner selection"
+        }, 400
+
+    orientation_square = square
+    orientation_ready = True
+
+    return {
+        "status": "annotated"
+    }
+
+
+@app.route("/reposition", methods=["POST"])
+def reposition():
+
+    global board_ready
+    global orientation_ready
+    global warped_board
+    global confirmed_frame
+    global horizontal_lines
+    global vertical_lines
+    global perspective_matrix
+    global orientation_square
+
+    board_ready = False
+    orientation_ready = False
+
+    warped_board = None
+    confirmed_frame = None
+
+    horizontal_lines = None
+    vertical_lines = None
+    perspective_matrix = None
+
+    orientation_square = None
+
+    return {
+        "status": "repositioning"
+    }
+
+
+@app.route("/status")
+def status():
+
+    return {
+        "ready": board_ready,
+        "processing": processing,
+        "orientation": (
+            board_ready
+            and not orientation_ready
+        )
+    }
+
+
+if __name__ == "__main__":
+
+    start_camera()
+
+    threading.Thread(
+        target=read_camera,
+        daemon=True
+    ).start()
+
+    print("Camera started.")
+    print("Open http://chessora-pi:5000")
+
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        threaded=True
+    )

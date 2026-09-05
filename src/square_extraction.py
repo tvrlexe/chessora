@@ -79,6 +79,7 @@ def line_intersection(line1, line2):
 
 
 def square_name(row, col, square):
+
     return LAYOUTS[square][row][col]
 
 
@@ -125,10 +126,11 @@ def annotate_grid(
                 name,
                 tuple(center),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
+                0.35,
                 (0, 0, 255),
-                2,
+                1,
                 cv2.LINE_AA
             )
 
     return output
+
