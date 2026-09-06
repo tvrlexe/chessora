@@ -1,0 +1,176 @@
+{
+  "sample_id": "sample_20260907_050713_29120891",
+  "seed": 29120891,
+  "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+  "position_mode": "starting",
+  "orientation": "a8",
+  "pieces": {
+    "h8": {
+      "color": "black",
+      "piece": "rook"
+    },
+    "g8": {
+      "color": "black",
+      "piece": "knight"
+    },
+    "f8": {
+      "color": "black",
+      "piece": "bishop"
+    },
+    "e8": {
+      "color": "black",
+      "piece": "king"
+    },
+    "d8": {
+      "color": "black",
+      "piece": "queen"
+    },
+    "c8": {
+      "color": "black",
+      "piece": "bishop"
+    },
+    "b8": {
+      "color": "black",
+      "piece": "knight"
+    },
+    "a8": {
+      "color": "black",
+      "piece": "rook"
+    },
+    "h7": {
+      "color": "black",
+      "piece": "pawn"
+    },
+    "g7": {
+      "color": "black",
+      "piece": "pawn"
+    },
+    "f7": {
+      "color": "black",
+      "piece": "pawn"
+    },
+    "e7": {
+      "color": "black",
+      "piece": "pawn"
+    },
+    "d7": {
+      "color": "black",
+      "piece": "pawn"
+    },
+    "c7": {
+      "color": "black",
+      "piece": "pawn"
+    },
+    "b7": {
+      "color": "black",
+      "piece": "pawn"
+    },
+    "a7": {
+      "color": "black",
+      "piece": "pawn"
+    },
+    "h2": {
+      "color": "white",
+      "piece": "pawn"
+    },
+    "g2": {
+      "color": "white",
+      "piece": "pawn"
+    },
+    "f2": {
+      "color": "white",
+      "piece": "pawn"
+    },
+    "e2": {
+      "color": "white",
+      "piece": "pawn"
+    },
+    "d2": {
+      "color": "white",
+      "piece": "pawn"
+    },
+    "c2": {
+      "color": "white",
+      "piece": "pawn"
+    },
+    "b2": {
+      "color": "white",
+      "piece": "pawn"
+    },
+    "a2": {
+      "color": "white",
+      "piece": "pawn"
+    },
+    "h1": {
+      "color": "white",
+      "piece": "rook"
+    },
+    "g1": {
+      "color": "white",
+      "piece": "knight"
+    },
+    "f1": {
+      "color": "white",
+      "piece": "bishop"
+    },
+    "e1": {
+      "color": "white",
+      "piece": "king"
+    },
+    "d1": {
+      "color": "white",
+      "piece": "queen"
+    },
+    "c1": {
+      "color": "white",
+      "piece": "bishop"
+    },
+    "b1": {
+      "color": "white",
+      "piece": "knight"
+    },
+    "a1": {
+      "color": "white",
+      "piece": "rook"
+    }
+  },
+  "dataset_image": "/home/chess/chessora/photos/dataset/sample_20260907_050713_29120891.jpg",
+  "board_corners": [
+    [
+      388.0,
+      496.0
+    ],
+    [
+      572.0,
+      484.0
+    ],
+    [
+      643.0,
+      671.0
+    ],
+    [
+      331.0,
+      689.0
+    ]
+  ],
+  "expanded_corners": [
+    [
+      359.3500061035156,
+      469.29998779296875
+    ],
+    [
+      598.5499877929688,
+      453.70001220703125
+    ],
+    [
+      690.8499755859375,
+      696.7999877929688
+    ],
+    [
+      285.25,
+      720.2000122070312
+    ]
+  ],
+  "board_expansion_percent": 0.3,
+  "status": "board_processed"
+}
