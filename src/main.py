@@ -1,6 +1,5 @@
 import subprocess
 import threading
-import time
 
 import cv2
 import numpy as np
@@ -9,7 +8,6 @@ from flask import Flask, Response, request
 from board_detection import get_board_points
 from perspective import get_perspective_matrix, warp_board
 from grid_reconstruction import detect_segments, get_grid
-from piece_detection import detect_pieces
 from square_extraction import annotate_grid
 
 
@@ -37,13 +35,6 @@ processing = False
 board_ready = False
 orientation_ready = False
 orientation_square = None
-piece_positions = {}
-piece_missing_counts = {}
-piece_lock = threading.Lock()
-
-PIECE_UPDATE_INTERVAL = 1.0
-PIECE_CROP_MARGIN = 40
-PIECE_MISSING_GRACE = 2
 
 
 def start_camera():
@@ -226,96 +217,6 @@ def get_wide_grid():
     )
 
 
-def piece_detection_loop():
-
-    global piece_positions
-    global piece_missing_counts
-
-    while True:
-
-        if (
-            not board_ready
-            or not orientation_ready
-            or perspective_matrix is None
-            or horizontal_lines is None
-            or vertical_lines is None
-        ):
-            time.sleep(0.1)
-            continue
-
-        with frame_lock:
-            current_frame = None if frame is None else frame.copy()
-
-        if current_frame is None:
-            time.sleep(0.1)
-            continue
-
-        try:
-
-            warped_board = warp_board(
-                current_frame,
-                perspective_matrix,
-                SIZE
-            )
-
-            margin = PIECE_CROP_MARGIN
-            cropped_board = warped_board[
-                margin:SIZE - margin,
-                margin:SIZE - margin
-            ]
-            current_board = cv2.resize(
-                cropped_board,
-                (SIZE, SIZE),
-                interpolation=cv2.INTER_LINEAR
-            )
-            scale = SIZE / (SIZE - 2 * margin)
-            piece_horizontal = (horizontal_lines - margin) * scale
-            piece_vertical = (vertical_lines - margin) * scale
-
-            detected = detect_pieces(
-                current_board,
-                piece_horizontal,
-                piece_vertical,
-                orientation_square
-            )
-
-            with piece_lock:
-                updated_positions = dict(detected)
-                updated_missing = {}
-
-                for square, previous in piece_positions.items():
-
-                    if square in detected:
-                        continue
-
-                    misses = piece_missing_counts.get(square, 0) + 1
-
-                    if misses < PIECE_MISSING_GRACE:
-                        updated_positions[square] = previous
-                        updated_missing[square] = misses
-
-                for square in detected:
-                    updated_missing[square] = 0
-
-                piece_positions = updated_positions
-                piece_missing_counts = updated_missing
-
-                tracked_count = len(piece_positions)
-
-            print(
-                f"Pieces detected: {len(detected)}; "
-                f"pieces tracked: {tracked_count}"
-            )
-
-        except Exception as error:
-
-            print(
-                f"Piece detection failed: {error}"
-            )
-
-        time.sleep(PIECE_UPDATE_INTERVAL)
-
-
 def process_board():
 
     global confirmed_frame
@@ -428,42 +329,6 @@ def get_live_annotated_frame():
         wide_vertical,
         orientation_square
     )
-
-    inverse_matrix = np.linalg.inv(perspective_matrix)
-
-    with piece_lock:
-        current_pieces = dict(piece_positions)
-
-    for square, piece in current_pieces.items():
-
-        crop_scale = SIZE / (SIZE - 2 * PIECE_CROP_MARGIN)
-        crop_x, crop_y = piece["anchor"]
-        board_anchor = (
-            crop_x / crop_scale + PIECE_CROP_MARGIN,
-            crop_y / crop_scale + PIECE_CROP_MARGIN,
-        )
-        anchor = np.array(
-            [[board_anchor]],
-            dtype=np.float32
-        )
-
-        camera_anchor = cv2.perspectiveTransform(
-            anchor,
-            inverse_matrix
-        )[0, 0]
-
-        label = f"{square}: {piece['class']}"
-
-        cv2.putText(
-            output,
-            label,
-            tuple(np.round(camera_anchor).astype(int)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (255, 0, 255),
-            1,
-            cv2.LINE_AA
-        )
 
     return output
 
@@ -900,8 +765,6 @@ def reposition():
     global vertical_lines
     global perspective_matrix
     global orientation_square
-    global piece_positions
-    global piece_missing_counts
 
     board_ready = False
     orientation_ready = False
@@ -915,10 +778,6 @@ def reposition():
 
     orientation_square = None
 
-    with piece_lock:
-        piece_positions = {}
-        piece_missing_counts = {}
-
     return {
         "status": "repositioning"
     }
@@ -927,13 +786,9 @@ def reposition():
 @app.route("/status")
 def status():
 
-    with piece_lock:
-        piece_count = len(piece_positions)
-
     return {
         "ready": board_ready,
         "processing": processing,
-        "pieces": piece_count,
         "orientation": (
             board_ready
             and not orientation_ready
@@ -947,11 +802,6 @@ if __name__ == "__main__":
 
     threading.Thread(
         target=read_camera,
-        daemon=True
-    ).start()
-
-    threading.Thread(
-        target=piece_detection_loop,
         daemon=True
     ).start()
 
