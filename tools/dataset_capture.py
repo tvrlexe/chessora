@@ -9,7 +9,7 @@ from pathlib import Path
 import chess
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, send_file
+from flask import Flask, Response, jsonify, request, send_file
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -33,6 +33,9 @@ frame_lock = threading.Lock()
 state_lock = threading.Lock()
 position_seed = None
 position_board = None
+position_mode = "random"
+orientation = "a8"
+angle_index = 0
 preview_path = None
 last_capture = None
 last_result = {}
@@ -63,17 +66,38 @@ def random_position(seed=None):
     return board
 
 
-def render_position(board, square_size=96):
+def render_position(board, orientation="a8", square_size=96):
     image = np.zeros((square_size * 8, square_size * 8, 3), dtype=np.uint8)
     light = (235, 218, 185)
     dark = (120, 80, 45)
 
-    for square in chess.SQUARES:
-        file_index = chess.square_file(square)
-        rank_index = 7 - chess.square_rank(square)
-        left = file_index * square_size
-        top = rank_index * square_size
-        color = light if (file_index + rank_index) % 2 == 0 else dark
+    if orientation == "white-left":
+        coordinates = [
+            (file_index, rank_index)
+            for file_index in range(8)
+            for rank_index in range(8)
+        ]
+    elif orientation == "white-right":
+        coordinates = [
+            (file_index, rank_index)
+            for file_index in range(8)
+            for rank_index in range(7, -1, -1)
+        ]
+    else:
+        files = range(8) if orientation in ("a8", "a1") else range(7, -1, -1)
+        ranks = range(7, -1, -1) if orientation in ("a8", "h8") else range(8)
+        coordinates = [
+            (file_index, rank_index)
+            for rank_index in ranks
+            for file_index in files
+        ]
+
+    for display_index, (file_index, rank_index) in enumerate(coordinates):
+        row, col = divmod(display_index, 8)
+        square = chess.square(file_index, rank_index)
+        left = col * square_size
+        top = row * square_size
+        color = light if (row + col) % 2 == 0 else dark
         cv2.rectangle(image, (left, top), (left + square_size, top + square_size), color, -1)
 
         piece = board.piece_at(square)
@@ -141,10 +165,14 @@ def multipart(image):
     return b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + encoded.tobytes() + b"\r\n"
 
 
-def set_position(seed=None):
-    global position_seed, position_board, preview_path, last_capture, last_result
+def set_position(seed=None, mode="random", selected_orientation=None):
+    global position_seed, position_board, position_mode, orientation
+    global preview_path, last_capture, last_result
     position_seed = seed if seed is not None else random.randrange(1_000_000_000)
-    position_board = random_position(position_seed)
+    position_mode = mode
+    if selected_orientation is not None:
+        orientation = selected_orientation
+    position_board = chess.Board() if mode == "starting" else random_position(position_seed)
     preview_path = None
     last_capture = None
     last_result = {}
@@ -170,11 +198,12 @@ def index():
 <!doctype html><html><head><meta charset="utf-8"><title>Chessora Dataset Capture</title>
 <style>
 body{margin:0;background:#111820;color:#eef2f3;font-family:Arial,sans-serif}main{max-width:1400px;margin:auto;padding:24px}h1{margin-top:0}.layout{display:grid;grid-template-columns:minmax(320px,1fr) minmax(320px,1fr);gap:24px}.panel{background:#1d2932;border:1px solid #3d4c55;border-radius:8px;padding:18px}.digital-board{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));grid-template-rows:repeat(8,minmax(0,1fr));aspect-ratio:1;width:100%;overflow:hidden;background:#76502f}.square{display:grid;place-items:center;min-width:0;min-height:0;overflow:hidden;font-family:'DejaVu Sans',serif;font-size:clamp(28px,6vw,64px);line-height:1}.square.light{background:#ead9b5}.square.dark{background:#9b6b43}.piece-white{color:#fff;text-shadow:0 2px 2px #111}.piece-black{color:#111;text-shadow:0 1px 1px #fff}img{display:block;width:100%;height:auto;background:#080b0d}.results{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.meta{font-family:monospace;white-space:pre-wrap;color:#b9c9cd;margin:12px 0}.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:16px}button{border:0;border-radius:5px;padding:13px 20px;font-size:16px;font-weight:bold;cursor:pointer;background:#e1b45b;color:#17130b}button.secondary{background:#536a73;color:white}button:disabled{opacity:.5;cursor:wait}.status{min-height:24px;margin-top:14px;color:#e1b45b}@media(max-width:800px){.layout{grid-template-columns:1fr}.results{grid-template-columns:1fr}main{padding:12px}}
-</style></head><body><main><h1>Chessora Dataset Capture</h1><div class="layout"><section class="panel"><h2>Digital Position</h2><div id="digital-board" class="digital-board"></div><div id="meta" class="meta"></div><div class="actions"><button id="new-button" class="secondary">New Position</button><button id="capture-button">Take Photo</button></div><div id="status" class="status"></div></section><section class="panel"><h2>Camera</h2><img src="/video"><p class="meta">Place the physical board inside the camera view, reproduce the digital position, then capture.</p></section></div><section id="result" class="panel" style="display:none;margin-top:24px"><h2>Latest Dataset Image</h2><img id="crop"></section></main><script>
+</style></head><body><main><h1>Chessora Dataset Capture</h1><div class="layout"><section class="panel"><h2>Digital Position</h2><div id="digital-board" class="digital-board"></div><div id="meta" class="meta"></div><div class="actions"><button id="new-button" class="secondary">Random Position</button><button id="starting-button" class="secondary">Starting Position</button><button id="capture-button">Take Photo</button></div><h3>Default Starting Setup by Angle</h3><div class="actions"><button data-default-angle="a8">White Bottom</button><button data-default-angle="h8">White Bottom Flipped</button><button data-default-angle="a1">Black Bottom</button><button data-default-angle="h1">Black Bottom Flipped</button><button data-default-angle="white-left">White Left</button><button data-default-angle="white-right">White Right</button></div><div class="actions"><button data-angle="a8">Top Left: a8</button><button data-angle="h8">Top Right: h8</button><button data-angle="a1">Bottom Left: a1</button><button data-angle="h1">Bottom Right: h1</button><button data-angle="white-left">White Left</button><button data-angle="white-right">White Right</button></div><div id="status" class="status"></div></section><section class="panel"><h2>Camera</h2><img src="/video"><p class="meta">Select the physical board angle, reproduce the digital position, then capture.</p></section></div><section id="result" class="panel" style="display:none;margin-top:24px"><h2>Latest Dataset Image</h2><img id="crop"></section></main><script>
 const digitalBoard=document.getElementById('digital-board');const meta=document.getElementById('meta');const status=document.getElementById('status');const result=document.getElementById('result');const symbols={white:{pawn:'♙',knight:'♘',bishop:'♗',rook:'♖',queen:'♕',king:'♔'},black:{pawn:'♟',knight:'♞',bishop:'♝',rook:'♜',queen:'♛',king:'♚'}};
-function drawBoard(pieces){digitalBoard.innerHTML='';for(let row=0;row<8;row++){for(let col=0;col<8;col++){const file=String.fromCharCode(97+col);const square=file+(8-row);const cell=document.createElement('div');cell.className='square '+((row+col)%2?'dark':'light');const piece=pieces[square];if(piece){cell.textContent=symbols[piece.color][piece.piece];cell.classList.add('piece-'+piece.color)}digitalBoard.appendChild(cell)}}}
-function refresh(){fetch('/state').then(r=>r.json()).then(s=>{drawBoard(s.pieces);meta.textContent='Seed: '+s.seed+'\\nFEN: '+s.fen+'\\nPieces: '+s.piece_count+(s.last_capture?'\\nLast: '+s.last_capture:'');if(s.result){result.style.display='block';document.getElementById('crop').src='/result/crop?t='+Date.now()}})}
-document.getElementById('new-button').onclick=()=>{status.textContent='Generating position...';fetch('/new',{method:'POST'}).then(refresh).then(()=>{status.textContent='Position ready. Reproduce it on the physical board.'})};document.getElementById('capture-button').onclick=()=>{status.textContent='Capturing and processing board...';fetch('/capture',{method:'POST'}).then(r=>r.json()).then(s=>{status.textContent=s.message;refresh()})};refresh();
+function drawBoard(pieces,angle){digitalBoard.innerHTML='';let coordinates=[];if(angle==='white-left'){for(let file=0;file<8;file++)for(let rank=0;rank<8;rank++)coordinates.push([file,rank])}else if(angle==='white-right'){for(let file=0;file<8;file++)for(let rank=7;rank>=0;rank--)coordinates.push([file,rank])}else{const files=(angle==='a8'||angle==='a1'?[0,1,2,3,4,5,6,7]:[7,6,5,4,3,2,1,0]);const ranks=(angle==='a8'||angle==='h8'?[7,6,5,4,3,2,1,0]:[0,1,2,3,4,5,6,7]);for(const rank of ranks)for(const file of files)coordinates.push([file,rank])}for(let i=0;i<64;i++){const [file,rank]=coordinates[i];const row=Math.floor(i/8);const col=i%8;const square=String.fromCharCode(97+file)+(rank+1);const cell=document.createElement('div');cell.className='square '+((row+col)%2?'dark':'light');const piece=pieces[square];if(piece){cell.textContent=symbols[piece.color][piece.piece];cell.classList.add('piece-'+piece.color)}digitalBoard.appendChild(cell)}}
+function refresh(){fetch('/state').then(r=>r.json()).then(s=>{drawBoard(s.pieces,s.orientation);meta.textContent='Mode: '+s.mode+'\\nAngle: '+s.orientation+'\\nSeed: '+s.seed+'\\nFEN: '+s.fen+'\\nPieces: '+s.piece_count+(s.last_capture?'\\nLast: '+s.last_capture:'');if(s.result){result.style.display='block';document.getElementById('crop').src='/result/crop?t='+Date.now()}})}
+document.getElementById('new-button').onclick=()=>{status.textContent='Generating random position...';fetch('/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'random'})}).then(refresh).then(()=>{status.textContent='Random position ready.'})};document.getElementById('starting-button').onclick=()=>{status.textContent='Loading starting position...';fetch('/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'starting'})}).then(refresh).then(()=>{status.textContent='Starting position ready.'})};document.querySelectorAll('[data-angle]').forEach(button=>button.onclick=()=>{fetch('/angle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({angle:button.dataset.angle})}).then(refresh)});document.getElementById('capture-button').onclick=()=>{status.textContent='Capturing and processing board...';fetch('/capture',{method:'POST'}).then(r=>r.json()).then(s=>{status.textContent=s.message;refresh()})};refresh();
+document.querySelectorAll('[data-default-angle]').forEach(button=>button.onclick=()=>{status.textContent='Loading default starting setup...';fetch('/new',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'starting',angle:button.dataset.defaultAngle})}).then(refresh).then(()=>{status.textContent='Default starting setup ready.'})});refresh();
 </script></body></html>
 """
 
@@ -186,7 +215,7 @@ def preview():
 
     success, encoded = cv2.imencode(
         ".png",
-        render_position(position_board),
+        render_position(position_board, orientation),
     )
     if not success:
         return {"error": "Could not render preview"}, 500
@@ -219,6 +248,8 @@ def state():
     return jsonify({
         "seed": position_seed,
         "fen": position_board.fen(),
+        "mode": position_mode,
+        "orientation": orientation,
         "piece_count": len(position_board.piece_map()),
         "pieces": board_metadata(position_board),
         "last_capture": last_capture,
@@ -228,8 +259,29 @@ def state():
 
 @app.route("/new", methods=["POST"])
 def new_position():
-    set_position()
+    data = request.get_json(silent=True) or {}
+    mode = data.get("mode", "random")
+    selected_orientation = data.get("angle")
+    if mode not in ("random", "starting"):
+        return {"error": "Invalid position mode"}, 400
+    if selected_orientation not in (
+        None, "a8", "h8", "a1", "h1", "white-left", "white-right"
+    ):
+        return {"error": "Invalid board angle"}, 400
+    set_position(mode=mode, selected_orientation=selected_orientation)
     return {"status": "ok"}
+
+
+@app.route("/angle", methods=["POST"])
+def angle():
+    global orientation, preview_path
+    data = request.get_json(silent=True) or {}
+    selected = data.get("angle")
+    if selected not in ("a8", "h8", "a1", "h1", "white-left", "white-right"):
+        return {"error": "Invalid board angle"}, 400
+    orientation = selected
+    preview_path = None
+    return {"status": "ok", "orientation": orientation}
 
 
 @app.route("/capture", methods=["POST"])
@@ -249,7 +301,7 @@ def capture():
         preview_path = PREVIEW_DIR / f"position_{position_seed}_preview.png"
         cv2.imwrite(
             str(preview_path),
-            render_position(position_board),
+            render_position(position_board, orientation),
         )
         status = "board_processed"
         message = f"Saved {sample_id}; board crop ready for annotation."
@@ -268,6 +320,8 @@ def capture():
         "sample_id": sample_id,
         "seed": position_seed,
         "fen": position_board.fen(),
+        "position_mode": position_mode,
+        "orientation": orientation,
         "pieces": board_metadata(position_board),
         "dataset_image": None if crop_path is None else str(crop_path),
         "board_corners": None if points is None else points.tolist(),
