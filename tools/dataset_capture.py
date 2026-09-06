@@ -145,8 +145,7 @@ def set_position(seed=None):
     global position_seed, position_board, preview_path, last_capture, last_result
     position_seed = seed if seed is not None else random.randrange(1_000_000_000)
     position_board = random_position(position_seed)
-    preview_path = PREVIEW_DIR / f"position_{position_seed}_preview.png"
-    cv2.imwrite(str(preview_path), render_position(position_board))
+    preview_path = None
     last_capture = None
     last_result = {}
 
@@ -182,7 +181,16 @@ document.getElementById('new-button').onclick=()=>{status.textContent='Generatin
 
 @app.route("/preview")
 def preview():
-    return send_file(preview_path, mimetype="image/png")
+    if preview_path is not None and preview_path.exists():
+        return send_file(preview_path, mimetype="image/png")
+
+    success, encoded = cv2.imencode(
+        ".png",
+        render_position(position_board),
+    )
+    if not success:
+        return {"error": "Could not render preview"}, 500
+    return Response(encoded.tobytes(), mimetype="image/png")
 
 
 @app.route("/result/<kind>")
@@ -226,7 +234,7 @@ def new_position():
 
 @app.route("/capture", methods=["POST"])
 def capture():
-    global last_capture, last_result
+    global last_capture, last_result, preview_path
     with frame_lock:
         image = None if camera_frame is None else camera_frame.copy()
     if image is None:
@@ -238,6 +246,11 @@ def capture():
 
     try:
         points, expanded_points, crop_path = process_capture(image, sample_id)
+        preview_path = PREVIEW_DIR / f"position_{position_seed}_preview.png"
+        cv2.imwrite(
+            str(preview_path),
+            render_position(position_board),
+        )
         status = "board_processed"
         message = f"Saved {sample_id}; board crop ready for annotation."
         last_result = {
