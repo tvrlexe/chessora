@@ -266,19 +266,9 @@ def reconstruct(lines):
     return grid
 
 
-def get_grid(warped):
-
-    gray = cv2.cvtColor(
-        warped,
-        cv2.COLOR_BGR2GRAY
-    )
-
-    edges = cv2.Canny(
-        gray,
-        50,
-        150
-    )
-
+def detect_segments(image):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
     lines = cv2.HoughLinesP(
         edges,
         1,
@@ -289,50 +279,73 @@ def get_grid(warped):
     )
 
     if lines is None:
-        raise RuntimeError(
-            "No Hough lines detected"
-        )
+        raise RuntimeError("No Hough lines detected")
 
+    return lines.reshape(-1, 4)
+
+
+def positions_from_segments(segments, points):
+    destination = np.array(
+        [[0, 0], [SIZE, 0], [SIZE, SIZE], [0, SIZE]],
+        dtype=np.float32
+    )
+    matrix = cv2.getPerspectiveTransform(
+        points.astype(np.float32),
+        destination
+    )
+    polygon = points.astype(np.float32)
     horizontal = []
     vertical = []
 
-    for x1, y1, x2, y2 in lines.reshape(-1, 4):
+    for x1, y1, x2, y2 in segments:
+        midpoint = ((x1 + x2) / 2, (y1 + y2) / 2)
+        if cv2.pointPolygonTest(polygon, midpoint, False) < 0:
+            continue
 
-        angle = abs(
-            np.degrees(
-                np.arctan2(
-                    y2 - y1,
-                    x2 - x1
-                )
-            )
+        endpoints = np.array(
+            [[[x1, y1], [x2, y2]]],
+            dtype=np.float32
         )
+        warped = cv2.perspectiveTransform(endpoints, matrix)[0]
+        (wx1, wy1), (wx2, wy2) = warped
+        angle = abs(np.degrees(np.arctan2(wy2 - wy1, wx2 - wx1)))
 
         if angle < 10 or angle > 170:
-
-            horizontal.append(
-                (y1 + y2) / 2
-            )
-
+            horizontal.append((wy1 + wy2) / 2)
         elif 80 < angle < 100:
+            vertical.append((wx1 + wx2) / 2)
 
-            vertical.append(
-                (x1 + x2) / 2
+    return merge(horizontal), merge(vertical)
+
+
+def get_grid(image, points=None, segments=None):
+
+    if segments is None:
+        segments = detect_segments(image)
+
+    if points is not None:
+        horizontal, vertical = positions_from_segments(segments, points)
+    else:
+        lines = segments
+        horizontal = []
+        vertical = []
+
+        for x1, y1, x2, y2 in lines:
+            angle = abs(
+                np.degrees(
+                    np.arctan2(y2 - y1, x2 - x1)
+                )
             )
 
-    horizontal = merge(horizontal)
-    vertical = merge(vertical)
+            if angle < 10 or angle > 170:
+                horizontal.append((y1 + y2) / 2)
+            elif 80 < angle < 100:
+                vertical.append((x1 + x2) / 2)
 
-    print(
-        "Horizontal:",
-        np.round(horizontal, 1)
-    )
+        horizontal = merge(horizontal)
+        vertical = merge(vertical)
 
-    print(
-        "Vertical:",
-        np.round(vertical, 1)
-    )
+    print("Horizontal:", np.round(horizontal, 1))
+    print("Vertical:", np.round(vertical, 1))
 
-    horizontal = reconstruct(horizontal)
-    vertical = reconstruct(vertical)
-
-    return horizontal, vertical
+    return reconstruct(horizontal), reconstruct(vertical)
