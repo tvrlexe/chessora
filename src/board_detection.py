@@ -54,7 +54,7 @@ def decode_rle_mask(rle_mask):
     return (mask.astype(np.uint8) * 255)
 
 
-def get_board_points(image):
+def run_workflow(image, classes, workflow_url=URL):
     if image is None:
         raise ValueError("Input image is None")
 
@@ -70,17 +70,16 @@ def get_board_points(image):
     image_base64 = base64.b64encode(encoded.tobytes()).decode("ascii")
 
     response = requests.post(
-        URL,
+        workflow_url,
         json={
             "inputs": {
                 "image": {
                     "type": "base64",
                     "value": image_base64,
                 },
-
-                # This input still exists in the Workflow but no longer
-                # controls SAM 3 because its prompts are hardcoded.
-                "classes": "chessboard",
+                # The current Workflow may hardcode prompts; piece inference
+                # can use a separate URL through ROBOFLOW_PIECE_WORKFLOW_URL.
+                "classes": classes,
             }
         },
         headers={
@@ -96,7 +95,11 @@ def get_board_points(image):
             f"{response.status_code}: {response.text}"
         )
 
-    result = response.json()
+    return response.json()
+
+
+def get_board_points(image):
+    result = run_workflow(image, "chessboard")
 
     try:
         workflow_output = result["outputs"][0]

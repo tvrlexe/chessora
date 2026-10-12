@@ -41,7 +41,7 @@ src/
 
 ### Pipeline Workflow
 
-1. **Camera Capture**: Streams video from Raspberry Pi camera via `rpicam-vid`
+1. **Camera Capture**: Repeatedly captures sharp stills from the Raspberry Pi camera via `rpicam-still`
 2. **Board Detection**: 
    - Encodes frame to JPEG and sends to Roboflow API
    - Receives RLE-encoded segmentation mask
@@ -143,6 +143,16 @@ Based on user's selection of the a1 corner:
 
 To reposition, click "REPOSITION BOARD" to start over.
 
+Once orientation is selected, the app sends each new still frame to the Roboflow piece workflow. It uses the same `detect_segments`/`get_grid` reconstruction as the board setup, takes the bottom 40% of each piece mask, maps that base onto the reconstructed board squares, and logs the detected mask count and assigned squares. Set `ROBOFLOW_PIECE_WORKFLOW_URL` in `.env` if piece segmentation uses a different workflow URL than board detection.
+
+To run the same pipeline on a saved image:
+
+```bash
+python tools/detect_piece_squares.py photos/photo.jpg --orientation a8
+```
+
+`--orientation` uses the same layout key as the main page's **Which corner is a1?** choice: `a8` for top-left, `h8` for top-right, `a1` for bottom-left, or `h1` for bottom-right. These keys use the exact square layouts in `src/square_extraction.py`.
+
 ## API Endpoints
 
 - `GET /` - Main web interface
@@ -165,11 +175,10 @@ Located in `src/grid_reconstruction.py`:
 
 ## Camera Settings
 
-Configured in `src/main.py`:
+Configured in `src/main.py` to match `tools/take_photo.py`:
 - **Resolution**: 960×720
-- **FPS**: 30
-- **Codec**: MJPEG
-- **Quality settings**: Sharpness 1.0, Contrast 1.0, Saturation 1.0
+- **Capture**: Repeated `rpicam-still` captures using the same ROI, sharpness, contrast, brightness, saturation, and vertical flip settings
+- **Capture delay**: 0.25 seconds after each still capture
 
 ## Future Enhancements
 
